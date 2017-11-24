@@ -117,10 +117,21 @@ public final class TerminalBuilder {
                 return createWindowsTerminal(name);
             }
             else if(OSUtils.IS_HPUX) {
-                //TODO: need to parse differently than "normal" PosixSysTerminals...
-                // just fallback to ExternalTerminal for now
-                return new ExternalTerminal(name, type, (in == null) ? System.in : in,
-                        (out == null) ? System.out : out);
+                String type = this.type;
+                if (type == null) {
+                    type = System.getenv("TERM");
+                }
+                Pty pty = null;
+                try {
+                    pty = ExecPty.current();
+                } catch (IOException e) {
+                    LOGGER.log(Level.WARNING, "Failed to get a local tty", e);
+                }
+                if (pty != null) {
+                    return new PosixSysTerminal(name, type, pty, nativeSignals);
+                } else {
+                    return new ExternalTerminal(name, type, (in == null) ? System.in : in, (out == null) ? System.out : out);
+                }
             }
             else {
                 String type = this.type;
