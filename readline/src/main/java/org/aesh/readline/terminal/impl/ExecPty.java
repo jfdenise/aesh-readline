@@ -171,8 +171,10 @@ public class ExecPty implements Pty {
         }
         if (!commands.isEmpty()) {
             commands.add(0, OSUtils.STTY_COMMAND);
-            commands.add(1, OSUtils.STTY_F_OPTION);
-            commands.add(2, getName());
+            if (!OSUtils.IS_HPUX) {
+                commands.add(1, OSUtils.STTY_F_OPTION);
+                commands.add(2, getName());
+            }
             exec(commands.toArray(new String[commands.size()]));
         }
     }
@@ -180,7 +182,7 @@ public class ExecPty implements Pty {
     @Override
     public Size getSize() throws IOException {
         if(OSUtils.IS_HPUX)
-            return doGetSize(exec("ttytype", "-s"));
+            return doGetHPUXSize(doGetConfig());
         else
             return doGetOptimalSize(exec(OSUtils.STTY_COMMAND, OSUtils.STTY_F_OPTION, getName(), "size"));
 
