@@ -19,6 +19,7 @@
  */
 package org.aesh.readline;
 
+import java.util.ArrayList;
 import org.aesh.utils.Config;
 import org.aesh.readline.util.IntArrayBuilder;
 import org.aesh.utils.ANSI;
@@ -27,6 +28,7 @@ import org.aesh.readline.util.Parser;
 import org.aesh.readline.util.WcWidth;
 
 import java.util.Arrays;
+import java.util.List;
 import java.util.function.Consumer;
 import java.util.logging.Logger;
 import org.aesh.readline.cursor.CursorLocator;
@@ -322,13 +324,18 @@ public final class Buffer {
     }
 
     private int[] syncCursor(int currentPos, int newPos, int width) {
+        return syncCursor(currentPos, newPos, width, false);
+    }
+
+    private int[] syncCursor(int currentPos, int newPos, int width, boolean edge) {
         IntArrayBuilder builder = new IntArrayBuilder();
         if(newPos < 0)
             newPos = 0;
         if(currentPos / width == newPos / width) {
-            if(currentPos > newPos)
-                builder.append(moveNumberOfColumns(currentPos-newPos, 'D'));
-            else
+            if(currentPos > newPos) {
+                int move = Config.isMacOS() && edge ? currentPos-newPos + 1 : currentPos-newPos;
+                builder.append(moveNumberOfColumns(move, 'D'));
+            } else
                 builder.append(moveNumberOfColumns(newPos-currentPos, 'C'));
         }
         //if cursor and end of buffer is on different lines, we need to move the cursor
@@ -356,30 +363,79 @@ public final class Buffer {
      * @param width terminal width
      * @return out buffer
      */
-    private int[] syncCursorWhenBufferIsAtTerminalEdge(int currentPos, int newPos, int width) {
+    private List<int[]> syncCursorWhenBufferIsAtTerminalEdge(int currentPos, int newPos, int width) {
         IntArrayBuilder builder = new IntArrayBuilder();
-
-         if((currentPos) / width == newPos / width) {
-             builder.append(moveNumberOfColumns(width, 'D'));
+        List<int[]> lst = new ArrayList<>();
+        if (Config.isMacOS()) {
+            int moveToLine = currentPos / width - newPos / width;
+            char rowDirection = 'A';
+            if (moveToLine < 0) {
+                rowDirection = 'B';
+                moveToLine = Math.abs(moveToLine);
+            }
+            // The cursor is at the 0 of the padded line. Move up and forward (yes - means forward).
+            // to newPos.
+            lst.addAll(moveNumberOfColumnsAndRows2(moveToLine, rowDirection, -(newPos % width)));
+        } else {
+            if ((currentPos) / width == newPos / width) {
+                lst.add(moveNumberOfColumns(width, 'D'));
+            } else {
+                //if cursor and end of buffer is on different lines, we need to move the cursor
+                int moveToLine = (currentPos - 1) / width - newPos / width;
+                char rowDirection = 'A';
+                if (moveToLine < 0) {
+                    rowDirection = 'B';
+                    moveToLine = Math.abs(moveToLine);
+                }
+                lst.addAll(moveNumberOfColumnsAndRows2(moveToLine, rowDirection, width));
+            }
+            //now the cursor should be on the correct line and at position 0
+            // we then need to move it to newPos
+            lst.add(moveNumberOfColumns(newPos % width, 'C'));
+        }
+        return lst;
+    }
+private List<int[]> moveNumberOfColumnsAndRows2(int row, char rowCommand, int column) {
+        char direction = 'D'; //forward
+        List<int[]> lst = new ArrayList<>();
+        if(column < 0) {
+            column = Math.abs(column);
+            direction = 'C';
+        }
+        if(row < 10 && column < 10) {
+            int[] out = new int[8];
+            out[0] = 27; //esc, \033
+            out[1] = '[';
+            out[2] = 48 + row;
+            out[3] = rowCommand;
+            out[4] = 27;
+            out[5] = '[';
+            out[6] = 48 + column;
+            out[7] = direction;
+            lst.add(out);
+            return lst;
         }
         else {
-             //if cursor and end of buffer is on different lines, we need to move the cursor
-             int moveToLine = (currentPos - 1) / width - newPos / width;
-             int moveToColumn = -currentPos;
-             char rowDirection = 'A';
-             if (moveToLine < 0) {
-                 rowDirection = 'B';
-                 moveToLine = Math.abs(moveToLine);
-             }
-
-             builder.append(moveNumberOfColumnsAndRows(moveToLine, rowDirection, width));
-         }
-         //now the cursor should be on the correct line and at position 0
-        // we then need to move it to newPos
-        builder.append(moveNumberOfColumns(newPos % width, 'C'));
-        return builder.toArray();
+            int[] asciiRow = intToAsciiInts(row);
+            int[] asciiColumn = intToAsciiInts(column);
+            int[] out1 = new int[3+asciiRow.length];
+            int[] out2 = new int[3+asciiColumn.length];
+            out1[0] = 27; //esc, \033
+            out1[1] = '[';
+            for(int i=0; i < asciiRow.length; i++)
+                out1[2+i] = asciiRow[i];
+            //System.arraycopy(asciiRow, 0, out, 2, asciiRow.length);
+            out1[2+asciiRow.length] = rowCommand;
+            out2[0] = 27;
+            out2[1] = '[';
+            for(int i=0; i < asciiColumn.length; i++)
+                out2[2+i] = asciiColumn[i];
+            out2[2+asciiColumn.length] = direction;
+            lst.add(out1);
+            lst.add(out2);
+        }
+        return lst;
     }
-
     public static int[] moveNumberOfColumns(int column, char direction) {
         if(column < 10) {
             int[] out = new int[4];
@@ -582,7 +638,7 @@ public final class Buffer {
                 builder.append(Arrays.copyOfRange(line, cursor - delta, size));
             }
         }
-
+        List<int[]> lst = new ArrayList<>();
         if(width > 0) {
             //pad if we are at the end of the terminal
             if((size + promptLength()) % width == 0) {
@@ -591,7 +647,7 @@ public final class Buffer {
             //make sure we sync the cursor back
             if(!deltaChangedAtEndOfBuffer) {
                 if((size + promptLength()) % width == 0 && Config.isOSPOSIXCompatible()) {
-                    builder.append(syncCursorWhenBufferIsAtTerminalEdge(size + promptLength(), cursor + promptLength(), width));
+                    lst = syncCursorWhenBufferIsAtTerminalEdge(size + promptLength(), cursor + promptLength(), width);
                 }
                 else
                     builder.append(syncCursor(size + promptLength(), cursor + promptLength(), width));
@@ -599,6 +655,9 @@ public final class Buffer {
         }
 
         out.accept(builder.toArray());
+        for(int[] cmd : lst) {
+            out.accept(cmd);
+        }
         delta = 0;
         deltaChangedAtEndOfBuffer = true;
     }
@@ -786,7 +845,7 @@ public final class Buffer {
         //make sure we sync the cursor back
         if(!deltaChangedAtEndOfBuffer) {
             if((size + promptLength()) % width == 0 && Config.isOSPOSIXCompatible())
-                builder.append(syncCursor(size+promptLength()-1, cursor+promptLength(), width));
+                builder.append(syncCursor(size+promptLength()-1, cursor+promptLength(), width, true));
             else
                 builder.append(syncCursor(size+promptLength(), cursor+promptLength(), width));
          }
